@@ -72,6 +72,11 @@
     text-shadow:0 0 12px rgba(201,162,39,0.35), 0 1px 0 rgba(0,0,0,0.8);
   }
   .brand .sub{font-family:'IM Fell English',serif;font-style:italic;font-size:13px;color:var(--parchment-dim);letter-spacing:0.5px;}
+  .version-badge{
+    font-family:ui-monospace, 'SF Mono', 'Courier New', monospace;font-size:10px;color:var(--gold-dim);
+    border:1px solid var(--line);border-radius:10px;padding:2px 8px;letter-spacing:0.4px;
+    cursor:default;user-select:all;
+  }
   .toolbar{display:flex;gap:10px;align-items:center;}
 
   button{
@@ -277,6 +282,7 @@
     <div class="brand">
       <h1>Arazzo di Famiglia</h1>
       <span class="sub" id="count-label">nessun'anima registrata</span>
+      <span class="version-badge" id="version-badge" title="Versione di questa copia dell'app"></span>
     </div>
     <div class="toolbar">
       <button class="ghost" id="btn-import">Importa</button>
@@ -355,6 +361,9 @@
   "use strict";
 
   const STORAGE_KEY = "genealogia_data_v1";
+  // bump this on every shipped change so you can tell, at a glance, whether the copy you're
+  // looking at (phone, laptop, GitHub Pages...) is the same build or an older/newer one.
+  const APP_VERSION = "v1.5 · 14 ago 2026";
   let people = [];
   let selectedId = null;
   let editingId = null;
@@ -1077,6 +1086,7 @@
 
   // init
   load();
+  document.getElementById('version-badge').textContent = APP_VERSION;
   render();
 
   // register service worker for offline use (only works over https / localhost, not file://)
