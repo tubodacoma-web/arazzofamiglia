@@ -143,20 +143,20 @@
   .card.deceased .seal{background:radial-gradient(circle at 35% 30%, #2c2a26, #16140f 70%);color:#a89f89;}
   .card.deceased::after{color:var(--ash);content:'✦';}
 
-  /* decorative leaves around the card */
+  /* decorative leaves around the card — count scales with age (see leafCount() in JS) */
+  .leaf-slot{position:absolute;width:0;height:0;pointer-events:none;}
   .leaf{
-    position:absolute;width:15px;height:15px;
+    position:relative;width:13px;height:13px;margin:-6.5px 0 0 -6.5px;
     border-radius:0% 100% 0% 100%;
-    transform-origin:center bottom;
-    opacity:0.92;pointer-events:none;
+    transform-origin:center center;
+    opacity:0.9;pointer-events:none;
     box-shadow:inset 0 0 0 1px rgba(0,0,0,0.15);
   }
-  .leaf.pos-tl{top:-7px;left:-7px;transform:rotate(-25deg);animation:sway-a 4.5s ease-in-out infinite;}
-  .leaf.pos-br{bottom:-6px;right:8px;transform:rotate(150deg);animation:sway-b 5.2s ease-in-out infinite;}
-  .leaf.pos-tr{top:-6px;right:16px;transform:rotate(55deg) scale(0.8);animation:sway-a 3.8s ease-in-out infinite;}
+  .leaf.sway-a{animation:sway-a 4.5s ease-in-out infinite;}
+  .leaf.sway-b{animation:sway-b 5.2s ease-in-out infinite;}
 
-  @keyframes sway-a{0%,100%{transform:rotate(-25deg) translateY(0);}50%{transform:rotate(-12deg) translateY(-1.5px);}}
-  @keyframes sway-b{0%,100%{transform:rotate(150deg) translateY(0);}50%{transform:rotate(163deg) translateY(1.5px);}}
+  @keyframes sway-a{0%,100%{transform:rotate(-8deg) translateY(0);}50%{transform:rotate(8deg) translateY(-1.5px);}}
+  @keyframes sway-b{0%,100%{transform:rotate(8deg) translateY(0);}50%{transform:rotate(-8deg) translateY(1.5px);}}
 
   /* sex + age palettes */
   .leaf.sx-m.ag-child{background:linear-gradient(135deg,#9fd17a,#6f9e4f);}
@@ -435,6 +435,33 @@
       b.partnerId = aId;
     }
   }
+
+  // ---------- relation integrity: prevents impossible family graphs (e.g. a partner who is
+  // actually an ancestor/descendant), which is what collapses generations onto the same row.
+  function isAncestor(candidateId, ofId, visited){
+    visited = visited || new Set();
+    if(!ofId || visited.has(ofId)) return false;
+    visited.add(ofId);
+    const person = byId(ofId);
+    if(!person) return false;
+    if(person.padreId===candidateId || person.madreId===candidateId) return true;
+    return isAncestor(candidateId, person.padreId, visited) || isAncestor(candidateId, person.madreId, visited);
+  }
+  function validateRelations(id){
+    const p = byId(id); if(!p) return [];
+    const errors = [];
+    if(p.padreId && p.padreId===p.madreId) errors.push('Padre e madre non possono essere la stessa persona.');
+    if(p.padreId===id) errors.push('Una persona non può essere genitore di se stessa.');
+    if(p.madreId===id) errors.push('Una persona non può essere genitore di se stessa.');
+    if(p.partnerId===id) errors.push('Una persona non può essere partner di se stessa.');
+    if(p.padreId && isAncestor(id, p.padreId)) errors.push('Il padre scelto è un discendente di questa persona: creerebbe un ciclo nell\u2019albero.');
+    if(p.madreId && isAncestor(id, p.madreId)) errors.push('La madre scelta è un discendente di questa persona: creerebbe un ciclo nell\u2019albero.');
+    if(p.partnerId){
+      if(p.partnerId===p.padreId || p.partnerId===p.madreId) errors.push('Il partner scelto è anche genitore di questa persona: non è una relazione valida.');
+      else if(isAncestor(p.partnerId, id) || isAncestor(id, p.partnerId)) errors.push('Il partner scelto è un antenato o un discendente diretto: per questo l\u2019albero li mostrava sulla stessa riga. Controlla se intendevi collegarli come genitore/figlio invece che come partner.');
+    }
+    return errors;
+  }
   function fullName(p){ return [p.nome,p.cognome].filter(Boolean).join(' ') || '(senza nome)'; }
   function yearsLabel(p){
     const b = p.nascitaAnno || '?';
@@ -453,6 +480,37 @@
     if(p.sesso==='M') return 'sx-m';
     if(p.sesso==='F') return 'sx-f';
     return 'sx-n';
+  }
+  // more leaves the older the person is — a visual sign of a long life on the tapestry.
+  // ~2 leaves for a child, ~10 around 50 years, ~20 around 80+ (capped at 20, floored at 2).
+  function referenceAge(p){
+    if(p.deceduto && p.nascitaAnno && p.morteAnno) return p.morteAnno - p.nascitaAnno;
+    if(p.nascitaAnno) return new Date().getFullYear() - p.nascitaAnno;
+    return 30;
+  }
+  function leafCount(p){
+    const age = Math.max(0, referenceAge(p));
+    const n = Math.round((age - 10) / 3.5);
+    return Math.max(2, Math.min(20, n));
+  }
+  function leavesHtml(p){
+    const n = leafCount(p);
+    const sc = sexClass(p);
+    const cls = p.deceduto ? 'deceased' : ageCategory(p);
+    const cx = CARD_W/2, cy = CARD_H/2;
+    const rx = CARD_W/2 + 8, ry = CARD_H/2 + 8;
+    let html = '';
+    for(let i=0;i<n;i++){
+      const seed = seedWobble(p.id + '_leaf_' + i, 1);
+      const angle = (i/n)*Math.PI*2 + seed*0.35;
+      const x = cx + rx*Math.cos(angle);
+      const y = cy + ry*Math.sin(angle);
+      const rot = (angle*180/Math.PI) + 90 + seed*25;
+      const animClass = (i%2===0) ? 'sway-a' : 'sway-b';
+      const delay = (Math.abs(seed)*3).toFixed(2);
+      html += `<div class="leaf-slot" style="left:${x.toFixed(1)}px;top:${y.toFixed(1)}px;transform:translate(-50%,-50%) rotate(${rot.toFixed(0)}deg);"><div class="leaf ${sc} ${cls} ${animClass}" style="animation-delay:${delay}s;"></div></div>`;
+    }
+    return html;
   }
 
   // ---------- layout ----------
@@ -662,21 +720,17 @@
     people.forEach(p=>{
       const pp = pos[p.id];
       const fo = document.createElementNS(NS,'foreignObject');
-      fo.setAttribute('x', pp.x-10); fo.setAttribute('y', pp.y-10);
-      fo.setAttribute('width', CARD_W+24); fo.setAttribute('height', CARD_H+24);
+      fo.setAttribute('x', pp.x-16); fo.setAttribute('y', pp.y-16);
+      fo.setAttribute('width', CARD_W+32); fo.setAttribute('height', CARD_H+32);
       fo.setAttribute('overflow','visible');
       const wrap = document.createElement('div');
       wrap.className = 'card-wrap';
-      wrap.style.cssText = `position:relative;width:${CARD_W}px;height:${CARD_H}px;margin:10px;`;
+      wrap.style.cssText = `position:relative;width:${CARD_W}px;height:${CARD_H}px;margin:16px;`;
 
-      const ac = ageCategory(p);
-      const sc = sexClass(p);
       const deceasedClass = p.deceduto ? ' deceased' : '';
 
       wrap.innerHTML = `
-        <div class="leaf pos-tl ${sc} ${p.deceduto?'deceased':ac}"></div>
-        <div class="leaf pos-tr ${sc} ${p.deceduto?'deceased':ac}"></div>
-        <div class="leaf pos-br ${sc} ${p.deceduto?'deceased':ac}"></div>
+        ${leavesHtml(p)}
         <div class="card${deceasedClass}${p.id===selectedId?' selected':''}">
           <div class="seal">${p.nascitaAnno ? String(p.nascitaAnno).slice(-2) : '?'}</div>
           <p class="name">${escapeHtml(fullName(p))}</p>
@@ -774,6 +828,9 @@
     const mother = p.madreId ? byId(p.madreId) : null;
     const partner = p.partnerId ? byId(p.partnerId) : null;
     const children = people.filter(c=>c.padreId===id || c.madreId===id);
+    const siblings = people.filter(s=> s.id!==id && (
+      (p.padreId && s.padreId===p.padreId) || (p.madreId && s.madreId===p.madreId)
+    ));
 
     body.innerHTML = `
       <p class="d-name">${escapeHtml(fullName(p))}</p>
@@ -785,12 +842,14 @@
         <div class="label">Legami di sangue</div>
         ${father ? relChip('Padre', father) : ''}
         ${mother ? relChip('Madre', mother) : ''}
+        ${siblings.map(s=>relChip(siblingLabel(s), s)).join('')}
         ${partner ? relChip('Partner', partner) : ''}
         ${children.map(c=>relChip('Figlio/a', c)).join('')}
-        ${(!father && !mother && !partner && !children.length) ? '<p style="font-style:italic;color:var(--ash);font-size:13px;">Nessun legame ancora registrato.</p>' : ''}
+        ${(!father && !mother && !partner && !children.length && !siblings.length) ? '<p style="font-style:italic;color:var(--ash);font-size:13px;">Nessun legame ancora registrato.</p>' : ''}
       </div>
       <div class="rel-actions">
         ${(!father || !mother) ? `<button id="add-parent-btn" style="width:100%">+ Aggiungi ${father ? 'madre' : (mother ? 'padre' : 'genitore')}</button>` : ''}
+        <button id="add-sibling-btn" style="width:100%">+ Aggiungi fratello/sorella</button>
         <button id="add-partner-btn" style="width:100%">${partner ? '↺ Cambia partner' : '+ Aggiungi partner'}</button>
         <button id="add-child-btn" style="width:100%">+ Aggiungi figlio/a</button>
       </div>
@@ -802,8 +861,21 @@
     });
     const addParentBtn = document.getElementById('add-parent-btn');
     if(addParentBtn) addParentBtn.onclick = ()=> openForm(null, {childOf:id, slot: father ? 'madre' : 'padre'});
+    document.getElementById('add-sibling-btn').onclick = async ()=>{
+      if(!p.padreId && !p.madreId){
+        await showAlert('Per aggiungere un fratello o una sorella serve almeno un genitore registrato per questa persona. Aggiungi prima un genitore.');
+        return;
+      }
+      openForm(null, {siblingOf:id});
+    };
     document.getElementById('add-partner-btn').onclick = ()=> openForm(null, {partnerOf:id});
     document.getElementById('add-child-btn').onclick = ()=> openForm(null, {parentOf:id, sex:p.sesso});
+  }
+
+  function siblingLabel(s){
+    if(s.sesso==='M') return 'Fratello';
+    if(s.sesso==='F') return 'Sorella';
+    return 'Fratello/Sorella';
   }
 
   function relChip(label, person){
@@ -906,6 +978,8 @@
     };
     if(!data.nome && !data.cognome){ await showAlert('Inserisci almeno un nome o un cognome prima di salvare.'); return; }
 
+    const snapshot = JSON.parse(JSON.stringify(people)); // full rollback point in case the new relations are invalid
+
     let id = editingId;
     const partnerChoice = data.partnerId;
     delete data.partnerId; // handled separately via setPartner to keep both sides in sync
@@ -933,6 +1007,25 @@
       if(pendingLink.partnerOf){
         setPartner(id, pendingLink.partnerOf);
       }
+      if(pendingLink.siblingOf){
+        const sib = byId(pendingLink.siblingOf);
+        if(sib){
+          if(sib.padreId) self.padreId = sib.padreId;
+          if(sib.madreId) self.madreId = sib.madreId;
+        }
+      }
+    }
+
+    // validate the resulting family graph; roll back everything if it creates an impossible relation
+    const relatedIds = new Set([id]);
+    people.forEach(pp=>{ if(pp.padreId===id||pp.madreId===id||pp.partnerId===id) relatedIds.add(pp.id); });
+    let errors = validateRelations(id);
+    relatedIds.forEach(rid=>{ errors = errors.concat(validateRelations(rid)); });
+    errors = [...new Set(errors)];
+    if(errors.length){
+      people = snapshot;
+      await showAlert(errors[0]);
+      return;
     }
 
     closeForm();
