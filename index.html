@@ -363,7 +363,7 @@
   const STORAGE_KEY = "genealogia_data_v1";
   // bump this on every shipped change so you can tell, at a glance, whether the copy you're
   // looking at (phone, laptop, GitHub Pages...) is the same build or an older/newer one.
-  const APP_VERSION = "v1.5 · 14 ago 2026";
+  const APP_VERSION = "v1.9 · 14 ago 2026";
   let people = [];
   let selectedId = null;
   let editingId = null;
@@ -420,6 +420,23 @@
       const raw = localStorage.getItem(STORAGE_KEY);
       people = raw ? JSON.parse(raw) : [];
     }catch(e){ people = []; }
+    repairPartnerLinks();
+  }
+  // Self-healing: any one-directional partner link (data from before the app enforced
+  // symmetric links, or from a manual JSON import) gets completed on load, permanently,
+  // so a couple can never silently render apart because only one side "remembers" the link.
+  function repairPartnerLinks(){
+    let changed = false;
+    people.forEach(p=>{
+      if(p.partnerId){
+        const partner = people.find(x=>x.id===p.partnerId);
+        if(partner && partner.partnerId !== p.id){
+          partner.partnerId = p.id;
+          changed = true;
+        }
+      }
+    });
+    if(changed) save();
   }
   function save(){
     try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(people)); }catch(e){ /* storage unavailable */ }
@@ -507,7 +524,7 @@
     const sc = sexClass(p);
     const cls = p.deceduto ? 'deceased' : ageCategory(p);
     const cx = CARD_W/2, cy = CARD_H/2;
-    const rx = CARD_W/2 + 8, ry = CARD_H/2 + 8;
+    const rx = CARD_W/2 + 6, ry = CARD_H/2 + 6;
     let html = '';
     for(let i=0;i<n;i++){
       const seed = seedWobble(p.id + '_leaf_' + i, 1);
@@ -523,91 +540,129 @@
   }
 
   // ---------- layout ----------
-  function computeGenerations(){
-    const gen = {};
-    people.forEach(p=>{ gen[p.id] = (p.padreId||p.madreId) ? null : 0; });
+  // ---------- chronological layout: vertical position = birth year, always. No exceptions,
+  // no "generation" logic that can pull people out of order. Older is always higher up.
+  function computeReferenceYears(){
+    const year = {};
+    people.forEach(p=>{ if(p.nascitaAnno) year[p.id] = p.nascitaAnno; });
     let changed = true, guard = 0;
+    // fill in missing birth years from whatever's known nearby (parents, partner, children),
+    // iterating until nothing more can be inferred
     while(changed && guard < 50){
       changed = false; guard++;
       people.forEach(p=>{
-        if(gen[p.id] !== null && gen[p.id] !== undefined) return;
-        const gp = p.padreId ? gen[p.padreId] : undefined;
-        const gm = p.madreId ? gen[p.madreId] : undefined;
-        const known = [gp,gm].filter(v=>v!==undefined && v!==null);
-        if(known.length){ gen[p.id] = Math.max(...known)+1; changed = true; }
+        if(year[p.id] != null) return;
+        const fromParents = [];
+        if(p.padreId && year[p.padreId] != null) fromParents.push(year[p.padreId] + 28);
+        if(p.madreId && year[p.madreId] != null) fromParents.push(year[p.madreId] + 28);
+        if(fromParents.length){ year[p.id] = Math.round(fromParents.reduce((a,b)=>a+b,0)/fromParents.length); changed = true; return; }
+        if(p.partnerId && year[p.partnerId] != null){ year[p.id] = year[p.partnerId]; changed = true; return; }
+        const kids = people.filter(c => c.padreId===p.id || c.madreId===p.id);
+        const kidYears = kids.map(c=>year[c.id]).filter(v=>v!=null);
+        if(kidYears.length){ year[p.id] = Math.min(...kidYears) - 28; changed = true; return; }
       });
     }
-    changed = true; guard = 0;
-    while(changed && guard < 50){
-      changed = false; guard++;
-      people.forEach(p=>{
-        if(p.partnerId && gen[p.id]!=null && gen[p.partnerId]!=null && gen[p.id]!==gen[p.partnerId]){
-          const g = Math.max(gen[p.id], gen[p.partnerId]);
-          gen[p.id]=g; gen[p.partnerId]=g; changed = true;
+    // anyone still unresolved (fully isolated, no birth year, no linked relatives with one):
+    // park them at a neutral fallback so they don't randomly jump around between renders
+    const fallback = new Date().getFullYear() - 40;
+    people.forEach(p=>{ if(year[p.id] == null) year[p.id] = fallback; });
+
+    // A couple must always land on the same visual tier — otherwise a few years' difference
+    // that happens to straddle a decade boundary (e.g. 1936 vs 1940) would split a married
+    // couple onto two different rows, which makes no sense. This ONLY affects where they're
+    // drawn; each card still shows the person's real, individual birth year.
+    const tiered = Object.assign({}, year);
+    people.forEach(p=>{
+      if(p.partnerId && byId(p.partnerId)){
+        const a = year[p.id], b = year[p.partnerId];
+        if(a != null && b != null){
+          const shared = Math.round((a+b)/2);
+          tiered[p.id] = shared;
+          tiered[p.partnerId] = shared;
         }
-      });
-    }
-    people.forEach(p=>{ if(gen[p.id]==null) gen[p.id]=0; });
-    return gen;
+      }
+    });
+    return tiered;
   }
 
-  const CARD_W = 152, CARD_H = 66, GEN_GAP = 160, SIB_GAP = 30, COUPLE_GAP = 20;
+  const CARD_W = 152, CARD_H = 66, GEN_GAP = 160, SIB_GAP = 46, COUPLE_GAP = 36;
+  const YEAR_BAND = 10; // people born within the same N-year span share a visual tier
 
   function computeLayout(){
-    const gen = computeGenerations();
-    const byGen = {};
-    people.forEach(p=>{ (byGen[gen[p.id]] = byGen[gen[p.id]]||[]).push(p); });
-    const genKeys = Object.keys(byGen).map(Number).sort((a,b)=>a-b);
+    const refYear = computeReferenceYears();
+    const tierKeyOf = y => Math.floor(y / YEAR_BAND) * YEAR_BAND;
+    const distinctTierKeys = [...new Set(people.map(p => tierKeyOf(refYear[p.id])))].sort((a,b)=>a-b);
+    const tierIndexOf = {}; distinctTierKeys.forEach((k,i)=>{ tierIndexOf[k]=i; });
+
+    const byTier = {};
+    people.forEach(p=>{
+      const t = tierIndexOf[tierKeyOf(refYear[p.id])];
+      (byTier[t] = byTier[t]||[]).push(p);
+    });
+    const tierKeysSorted = Object.keys(byTier).map(Number).sort((a,b)=>a-b);
     const pos = {};
 
-    function orderGeneration(list){
-      const placed = new Set(); const ordered = [];
-      list.forEach(p=>{
-        if(placed.has(p.id)) return;
-        ordered.push(p); placed.add(p.id);
-        if(p.partnerId && !placed.has(p.partnerId)){
-          const partner = byId(p.partnerId);
-          if(partner && list.includes(partner)){ ordered.push(partner); placed.add(partner.id); }
+    // Partners are always laid out as a single inseparable visual unit, regardless of which
+    // one (if either) already has an "anchor" position from an already-placed parent. This is
+    // what keeps a couple side by side even when, say, only one of them has known parents.
+    tierKeysSorted.forEach((t)=>{
+      const raw = byTier[t];
+      const consumed = new Set();
+      const units = [];
+      raw.forEach(p=>{
+        if(consumed.has(p.id)) return;
+        consumed.add(p.id);
+        // Look for the partner either direction: p -> partner, OR partner -> p. This makes
+        // pairing immune to array order and to one-directional links (belt-and-braces on
+        // top of repairPartnerLinks(), in case data was edited mid-session).
+        let partner = null;
+        if(p.partnerId){
+          const candidate = byId(p.partnerId);
+          if(candidate && raw.includes(candidate) && !consumed.has(candidate.id)) partner = candidate;
         }
+        if(!partner){
+          partner = raw.find(o => o.partnerId===p.id && !consumed.has(o.id)) || null;
+        }
+        if(partner){
+          consumed.add(partner.id);
+          units.push({ people: [p, partner] });
+          return;
+        }
+        units.push({ people: [p] });
       });
-      return ordered;
-    }
 
-    genKeys.forEach((g,gi)=>{
-      const list = orderGeneration(byGen[g]);
-      if(gi===0){
-        let x = 0;
-        list.forEach((p,i)=>{
-          pos[p.id] = {x:x, y:g*(CARD_H+GEN_GAP)};
-          const isCoupleFirst = p.partnerId && list.includes(byId(p.partnerId)) && list.indexOf(byId(p.partnerId))===i+1;
-          x += CARD_W + (isCoupleFirst ? COUPLE_GAP : SIB_GAP);
+      const desired = {};
+      units.forEach(u=>{
+        const anchors = [];
+        u.people.forEach(person=>{
+          if(person.padreId && pos[person.padreId]) anchors.push(pos[person.padreId].x);
+          if(person.madreId && pos[person.madreId]) anchors.push(pos[person.madreId].x);
+          if(person.partnerId && pos[person.partnerId]) anchors.push(pos[person.partnerId].x); // partner already placed in an earlier tier
         });
-      } else {
-        const desired = {};
-        list.forEach(p=>{
-          const px = [];
-          if(p.padreId && pos[p.padreId]) px.push(pos[p.padreId].x);
-          if(p.madreId && pos[p.madreId]) px.push(pos[p.madreId].x);
-          if(px.length) desired[p.id] = px.reduce((a,b)=>a+b,0)/px.length;
+        if(anchors.length) desired[u.people[0].id] = anchors.reduce((a,b)=>a+b,0)/anchors.length;
+      });
+
+      units.sort((a,b)=>{
+        const da = desired[a.people[0].id], db = desired[b.people[0].id];
+        if(da==null && db==null) return 0;
+        if(da==null) return 1;
+        if(db==null) return -1;
+        return da-db;
+      });
+
+      let rightEdge = -Infinity;
+      units.forEach(u=>{
+        const pairWidth = u.people.length===2 ? (CARD_W*2 + COUPLE_GAP) : CARD_W;
+        const want = desired[u.people[0].id];
+        let startX = (want != null)
+          ? want - (u.people.length===2 ? (CARD_W+COUPLE_GAP)/2 : 0)
+          : (rightEdge===-Infinity ? 0 : rightEdge + SIB_GAP);
+        if(rightEdge !== -Infinity && startX < rightEdge + SIB_GAP) startX = rightEdge + SIB_GAP;
+        u.people.forEach((person,i)=>{
+          pos[person.id] = { x: startX + i*(CARD_W+COUPLE_GAP), y: t*(CARD_H+GEN_GAP) };
         });
-        list.sort((a,b)=>{
-          const da = desired[a.id], db = desired[b.id];
-          if(da==null && db==null) return 0;
-          if(da==null) return 1;
-          if(db==null) return -1;
-          return da-db;
-        });
-        let x = -Infinity;
-        list.forEach((p,i)=>{
-          let want = desired[p.id];
-          if(want==null){ want = (x===-Infinity) ? 0 : x + CARD_W + SIB_GAP; }
-          const isCoupleFirst = p.partnerId && list.includes(byId(p.partnerId)) && list.indexOf(byId(p.partnerId))===i+1;
-          const minGap = CARD_W + (isCoupleFirst ? COUPLE_GAP : SIB_GAP);
-          if(x!==-Infinity && want < x + minGap) want = x + minGap;
-          pos[p.id] = {x:want, y:g*(CARD_H+GEN_GAP)};
-          x = want;
-        });
-      }
+        rightEdge = startX + pairWidth;
+      });
     });
 
     const xs = Object.values(pos).map(p=>p.x);
@@ -657,28 +712,60 @@
     const linesG = document.createElementNS(NS,'g');
     g.appendChild(linesG);
 
-    // partner braided connectors
+    // partner connectors — same era (same visual tier): horizontal braid; very different ages
+    // (different tiers): a diagonal vine, same visual language as parent-child but marked with
+    // a gem instead of a leaf, so it's still clearly "not a parent/child" line.
     people.forEach(p=>{
       if(p.partnerId && p.id < p.partnerId){
         const partner = byId(p.partnerId);
         if(!partner || !pos[partner.id]) return;
         const a = pos[p.id], b = pos[partner.id];
-        const y = a.y + CARD_H/2;
-        const x1 = a.x + CARD_W, x2 = b.x;
-        if(x2 <= x1) return;
-        const midX = (x1+x2)/2;
-        const p1 = document.createElementNS(NS,'path');
-        p1.setAttribute('d', `M ${x1} ${y} Q ${midX} ${y-9}, ${x2} ${y}`);
-        p1.setAttribute('stroke','url(#vineGrad)'); p1.setAttribute('stroke-width','2'); p1.setAttribute('fill','none'); p1.setAttribute('opacity','0.75');
-        const p2 = document.createElementNS(NS,'path');
-        p2.setAttribute('d', `M ${x1} ${y} Q ${midX} ${y+9}, ${x2} ${y}`);
-        p2.setAttribute('stroke','url(#vineGrad)'); p2.setAttribute('stroke-width','2'); p2.setAttribute('fill','none'); p2.setAttribute('opacity','0.5');
-        linesG.appendChild(p1); linesG.appendChild(p2);
-        const gem = document.createElementNS(NS,'rect');
-        gem.setAttribute('x', midX-4); gem.setAttribute('y', y-4); gem.setAttribute('width',8); gem.setAttribute('height',8);
-        gem.setAttribute('transform', `rotate(45 ${midX} ${y})`);
-        gem.setAttribute('fill','url(#gem)'); gem.setAttribute('stroke','#c9a227'); gem.setAttribute('stroke-width','0.6');
-        linesG.appendChild(gem);
+
+        if(Math.abs(a.y - b.y) < 1){
+          // same tier: horizontal braid
+          const y = a.y + CARD_H/2;
+          const x1 = Math.min(a.x,b.x) + CARD_W, x2 = Math.max(a.x,b.x);
+          if(x2 <= x1) return;
+          const midX = (x1+x2)/2;
+          const p1 = document.createElementNS(NS,'path');
+          p1.setAttribute('d', `M ${x1} ${y} Q ${midX} ${y-9}, ${x2} ${y}`);
+          p1.setAttribute('stroke','url(#vineGrad)'); p1.setAttribute('stroke-width','2'); p1.setAttribute('fill','none'); p1.setAttribute('opacity','0.75');
+          const p2 = document.createElementNS(NS,'path');
+          p2.setAttribute('d', `M ${x1} ${y} Q ${midX} ${y+9}, ${x2} ${y}`);
+          p2.setAttribute('stroke','url(#vineGrad)'); p2.setAttribute('stroke-width','2'); p2.setAttribute('fill','none'); p2.setAttribute('opacity','0.5');
+          linesG.appendChild(p1); linesG.appendChild(p2);
+          const gem = document.createElementNS(NS,'rect');
+          gem.setAttribute('x', midX-4); gem.setAttribute('y', y-4); gem.setAttribute('width',8); gem.setAttribute('height',8);
+          gem.setAttribute('transform', `rotate(45 ${midX} ${y})`);
+          gem.setAttribute('fill','url(#gem)'); gem.setAttribute('stroke','#c9a227'); gem.setAttribute('stroke-width','0.6');
+          linesG.appendChild(gem);
+        } else {
+          // different tiers (large age gap): diagonal vine between the two card centers,
+          // from the elder's side to the younger's side
+          const elder = a.y < b.y ? a : b, younger = a.y < b.y ? b : a;
+          const from = {x: elder.x+CARD_W/2, y: elder.y+CARD_H};
+          const to = {x: younger.x+CARD_W/2, y: younger.y};
+          const midY = (from.y+to.y)/2;
+          const wobble = seedWobble(p.id+partner.id, 26);
+          const d = `M ${from.x} ${from.y} C ${from.x+wobble} ${midY}, ${to.x-wobble} ${midY}, ${to.x} ${to.y}`;
+          const path = document.createElementNS(NS,'path');
+          path.setAttribute('d', d);
+          path.setAttribute('stroke','url(#vineGrad)'); path.setAttribute('stroke-width','2.2'); path.setAttribute('fill','none');
+          path.setAttribute('opacity','0.6'); path.setAttribute('stroke-linecap','round');
+          linesG.appendChild(path);
+          const shimmer = document.createElementNS(NS,'path');
+          shimmer.setAttribute('d', d);
+          shimmer.setAttribute('stroke','#eecd6e'); shimmer.setAttribute('stroke-width','1'); shimmer.setAttribute('fill','none');
+          shimmer.setAttribute('opacity','0.55'); shimmer.setAttribute('stroke-dasharray','1 7');
+          shimmer.innerHTML = `<animate attributeName="stroke-dashoffset" from="0" to="-16" dur="2.2s" repeatCount="indefinite"/>`;
+          linesG.appendChild(shimmer);
+          const midX = (from.x+wobble+to.x-wobble)/2;
+          const gem = document.createElementNS(NS,'rect');
+          gem.setAttribute('x', midX-4); gem.setAttribute('y', midY-4); gem.setAttribute('width',8); gem.setAttribute('height',8);
+          gem.setAttribute('transform', `rotate(45 ${midX} ${midY})`);
+          gem.setAttribute('fill','url(#gem)'); gem.setAttribute('stroke','#c9a227'); gem.setAttribute('stroke-width','0.6');
+          linesG.appendChild(gem);
+        }
       }
     });
 

@@ -1,6 +1,6 @@
 // Bump this string every time you re-upload the app to force old caches to be cleared.
 // Keep it in sync with APP_VERSION inside index.html so you can compare at a glance.
-const CACHE_NAME = 'arazzo-famiglia-v1.5';
+const CACHE_NAME = 'arazzo-famiglia-v1.9';
 
 // Static assets that rarely change: fine to serve straight from cache.
 const STATIC_ASSETS = [
