@@ -363,7 +363,7 @@
   const STORAGE_KEY = "genealogia_data_v1";
   // bump this on every shipped change so you can tell, at a glance, whether the copy you're
   // looking at (phone, laptop, GitHub Pages...) is the same build or an older/newer one.
-  const APP_VERSION = "v1.9 · 14 ago 2026";
+  const APP_VERSION = "v2.1 · 14 ago 2026";
   let people = [];
   let selectedId = null;
   let editingId = null;
@@ -567,20 +567,43 @@
     const fallback = new Date().getFullYear() - 40;
     people.forEach(p=>{ if(year[p.id] == null) year[p.id] = fallback; });
 
-    // A couple must always land on the same visual tier — otherwise a few years' difference
-    // that happens to straddle a decade boundary (e.g. 1936 vs 1940) would split a married
-    // couple onto two different rows, which makes no sense. This ONLY affects where they're
-    // drawn; each card still shows the person's real, individual birth year.
-    const tiered = Object.assign({}, year);
+    // A close-knit family cluster must always land on the same visual tier — partners, AND
+    // siblings who share at least one parent. Otherwise a birth year that happens to sit right
+    // on a decade boundary (e.g. a sister born 1928 vs her sisters born 1930/1933) would split
+    // the group across rows, which makes no sense. This ONLY affects where they're drawn; each
+    // card still shows the person's real, individual birth year.
+    const clusterOf = {}; // union-find parent pointers
+    people.forEach(p=>{ clusterOf[p.id] = p.id; });
+    function findRoot(id){
+      while(clusterOf[id] !== id){ clusterOf[id] = clusterOf[clusterOf[id]]; id = clusterOf[id]; }
+      return id;
+    }
+    function unite(a,b){
+      const ra = findRoot(a), rb = findRoot(b);
+      if(ra !== rb) clusterOf[ra] = rb;
+    }
     people.forEach(p=>{
-      if(p.partnerId && byId(p.partnerId)){
-        const a = year[p.id], b = year[p.partnerId];
-        if(a != null && b != null){
-          const shared = Math.round((a+b)/2);
-          tiered[p.id] = shared;
-          tiered[p.partnerId] = shared;
-        }
+      if(p.partnerId && byId(p.partnerId)) unite(p.id, p.partnerId);
+    });
+    for(let i=0;i<people.length;i++){
+      for(let j=i+1;j<people.length;j++){
+        const a = people[i], b = people[j];
+        const shareAParent = (a.padreId && a.padreId===b.padreId) || (a.madreId && a.madreId===b.madreId);
+        if(shareAParent) unite(a.id, b.id);
       }
+    }
+
+    const groups = {};
+    people.forEach(p=>{
+      const root = findRoot(p.id);
+      (groups[root] = groups[root] || []).push(p.id);
+    });
+
+    const tiered = Object.assign({}, year);
+    Object.values(groups).forEach(ids=>{
+      if(ids.length < 2) return;
+      const avg = Math.round(ids.reduce((sum,id)=>sum + year[id], 0) / ids.length);
+      ids.forEach(id=>{ tiered[id] = avg; });
     });
     return tiered;
   }
@@ -769,7 +792,11 @@
       }
     });
 
-    // parent-child vine connectors
+    // parent-child vine connectors — control points are anchored near each endpoint's own
+    // x (not near the midpoint), so the curve hugs the parent's column on the way down and
+    // the child's column on the way in, only crossing over near the very middle. This keeps
+    // it visually unambiguous which two cards a line connects, even when an unrelated card
+    // (like a partner) sits in between them horizontally.
     people.forEach(p=>{
       const pp = pos[p.id];
       [{id:p.padreId,side:-1},{id:p.madreId,side:1}].forEach(({id:parentId,side})=>{
@@ -777,10 +804,12 @@
         const par = pos[parentId];
         const childTop = {x: pp.x+CARD_W/2, y: pp.y};
         const parentBottom = {x: par.x+CARD_W/2, y: par.y+CARD_H};
-        const midY = (parentBottom.y + childTop.y)/2;
-        const wobble = seedWobble(p.id + (parentId||''), 22) * side;
+        const dy = childTop.y - parentBottom.y;
+        const wobble = seedWobble(p.id + (parentId||''), 8) * side;
+        const c1 = { x: parentBottom.x + wobble, y: parentBottom.y + dy*0.5 };
+        const c2 = { x: childTop.x - wobble, y: childTop.y - dy*0.5 };
         const path = document.createElementNS(NS,'path');
-        const d = `M ${parentBottom.x} ${parentBottom.y} C ${parentBottom.x+wobble} ${midY-14}, ${childTop.x-wobble} ${midY+14}, ${childTop.x} ${childTop.y}`;
+        const d = `M ${parentBottom.x} ${parentBottom.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${childTop.x} ${childTop.y}`;
         path.setAttribute('d', d);
         path.setAttribute('stroke', 'url(#vineGrad)');
         path.setAttribute('stroke-width','2.2');
@@ -799,9 +828,9 @@
         shimmer.innerHTML = `<animate attributeName="stroke-dashoffset" from="0" to="-16" dur="2.2s" repeatCount="indefinite"/>`;
         linesG.appendChild(shimmer);
 
-        // small leaf glyph at path midpoint (approx bezier midpoint)
-        const mx = (parentBottom.x*0.125 + (parentBottom.x+wobble)*0.375 + (childTop.x-wobble)*0.375 + childTop.x*0.125);
-        const my = (parentBottom.y*0.125 + (midY-14)*0.375 + (midY+14)*0.375 + childTop.y*0.125);
+        // small leaf glyph at the curve's true midpoint (t=0.5 on the cubic bezier)
+        const mx = parentBottom.x*0.125 + c1.x*0.375 + c2.x*0.375 + childTop.x*0.125;
+        const my = parentBottom.y*0.125 + c1.y*0.375 + c2.y*0.375 + childTop.y*0.125;
         const leaf = document.createElementNS(NS,'rect');
         leaf.setAttribute('x', mx-4); leaf.setAttribute('y', my-4); leaf.setAttribute('width',8); leaf.setAttribute('height',8);
         leaf.setAttribute('rx', 4); leaf.setAttribute('ry', 1);
