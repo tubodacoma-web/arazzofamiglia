@@ -363,7 +363,7 @@
   const STORAGE_KEY = "genealogia_data_v1";
   // bump this on every shipped change so you can tell, at a glance, whether the copy you're
   // looking at (phone, laptop, GitHub Pages...) is the same build or an older/newer one.
-  const APP_VERSION = "v2.1 · 14 ago 2026";
+  const APP_VERSION = "v2.2 · 14 ago 2026";
   let people = [];
   let selectedId = null;
   let editingId = null;
@@ -609,7 +609,7 @@
   }
 
   const CARD_W = 152, CARD_H = 66, GEN_GAP = 160, SIB_GAP = 46, COUPLE_GAP = 36;
-  const YEAR_BAND = 10; // people born within the same N-year span share a visual tier
+  const YEAR_BAND = 5; // people born within the same N-year span share a visual tier (kept narrow so unrelated same-era people don't all crowd into one very wide row)
 
   function computeLayout(){
     const refYear = computeReferenceYears();
