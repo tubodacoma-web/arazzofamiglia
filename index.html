@@ -363,7 +363,7 @@
   const STORAGE_KEY = "genealogia_data_v1";
   // bump this on every shipped change so you can tell, at a glance, whether the copy you're
   // looking at (phone, laptop, GitHub Pages...) is the same build or an older/newer one.
-  const APP_VERSION = "v2.2 · 14 ago 2026";
+  const APP_VERSION = "v2.3 · 14 ago 2026";
   let people = [];
   let selectedId = null;
   let editingId = null;
@@ -792,11 +792,37 @@
       }
     });
 
+    // detects any card sitting in the straight path between two points, and returns how far
+    // (and in which direction) the curve needs to bow to clear it — used so a long connector
+    // that skips several rows never visually passes through an unrelated person's card.
+    function findObstacleDeflection(fromPt, toPt, excludeIds){
+      const steps = 10;
+      let maxPush = 0, pushDir = 1;
+      for(let i=1;i<steps;i++){
+        const t = i/steps;
+        const y = fromPt.y + (toPt.y-fromPt.y)*t;
+        const naiveX = fromPt.x + (toPt.x-fromPt.x)*t;
+        Object.keys(pos).forEach(id=>{
+          if(excludeIds.has(id)) return;
+          const box = pos[id];
+          if(y < box.y-4 || y > box.y+CARD_H+4) return;
+          const left = box.x-6, right = box.x+CARD_W+6;
+          if(naiveX > left && naiveX < right){
+            const clearLeft = naiveX-left+16, clearRight = right-naiveX+16;
+            const push = Math.min(clearLeft, clearRight);
+            if(push > maxPush){ maxPush = push; pushDir = (clearLeft<clearRight) ? -1 : 1; }
+          }
+        });
+      }
+      return { push:maxPush, dir:pushDir };
+    }
+
     // parent-child vine connectors — control points are anchored near each endpoint's own
     // x (not near the midpoint), so the curve hugs the parent's column on the way down and
     // the child's column on the way in, only crossing over near the very middle. This keeps
     // it visually unambiguous which two cards a line connects, even when an unrelated card
-    // (like a partner) sits in between them horizontally.
+    // (like a partner) sits in between them horizontally. If the connector spans several rows
+    // and something unrelated sits directly on its path, it bows sideways to clear it.
     people.forEach(p=>{
       const pp = pos[p.id];
       [{id:p.padreId,side:-1},{id:p.madreId,side:1}].forEach(({id:parentId,side})=>{
@@ -806,8 +832,10 @@
         const parentBottom = {x: par.x+CARD_W/2, y: par.y+CARD_H};
         const dy = childTop.y - parentBottom.y;
         const wobble = seedWobble(p.id + (parentId||''), 8) * side;
-        const c1 = { x: parentBottom.x + wobble, y: parentBottom.y + dy*0.5 };
-        const c2 = { x: childTop.x - wobble, y: childTop.y - dy*0.5 };
+        const { push, dir } = findObstacleDeflection(parentBottom, childTop, new Set([p.id, parentId]));
+        const deflect = push * dir;
+        const c1 = { x: parentBottom.x + wobble + deflect, y: parentBottom.y + dy*0.5 };
+        const c2 = { x: childTop.x - wobble + deflect, y: childTop.y - dy*0.5 };
         const path = document.createElementNS(NS,'path');
         const d = `M ${parentBottom.x} ${parentBottom.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${childTop.x} ${childTop.y}`;
         path.setAttribute('d', d);
