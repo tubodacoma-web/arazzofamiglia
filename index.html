@@ -424,7 +424,7 @@
   const STORAGE_KEY = "genealogia_data_v1";
   // bump this on every shipped change so you can tell, at a glance, whether the copy you're
   // looking at (phone, laptop, GitHub Pages...) is the same build or an older/newer one.
-  const APP_VERSION = "v2.6 · 14 ago 2026";
+  const APP_VERSION = "v2.7 · 14 ago 2026";
   let people = [];
   let selectedId = null;
   let lastPos = {}; // most recent card layout positions, reused for the print/PDF export
@@ -984,7 +984,7 @@
           <div class="place">${escapeHtml(p.nascitaLuogo||'')}</div>
         </div>
       `;
-      attachCardDrag(wrap.querySelector('.card'), p.id);
+      attachCardDrag(wrap.querySelector('.card'), p.id, fo);
       fo.appendChild(wrap);
       g.appendChild(fo);
     });
@@ -1063,38 +1063,46 @@
   // Lets you pick up any card and drop it wherever you like; from then on it's "pinned" and
   // stays exactly there on every re-render, ignoring the automatic chronological layout
   // (which can then be undone per-person from the detail panel).
-  let renderQueued = false;
-  function queueRender(){
-    if(renderQueued) return;
-    renderQueued = true;
-    requestAnimationFrame(()=>{ renderQueued = false; render({skipSave:true}); });
-  }
+  //
+  // While actively dragging, we NEVER call the full render() — that destroys and rebuilds
+  // every card/line in the SVG, including the very element that has pointer capture, which
+  // is what caused the erratic "moves on its own" behaviour. Instead we move only the
+  // dragged card's own foreignObject directly (a cheap, instant DOM update), and leave the
+  // connecting lines exactly where they were until you release — at which point a single
+  // proper render() snaps everything (including the lines) into their final place.
   let cardDrag = null;
-  function attachCardDrag(cardEl, personId){
+  function attachCardDrag(cardEl, personId, foEl){
     cardEl.addEventListener('pointerdown', e=>{
       e.stopPropagation();
       const p = byId(personId);
       const base = (p.customX!=null && p.customY!=null) ? {x:p.customX,y:p.customY} : (lastPos[personId] || {x:0,y:0});
-      cardDrag = { personId, startX:e.clientX, startY:e.clientY, baseX:base.x, baseY:base.y, moved:false };
+      cardDrag = { personId, foEl, startX:e.clientX, startY:e.clientY, baseX:base.x, baseY:base.y, liveX:base.x, liveY:base.y, moved:false };
       if(cardEl.setPointerCapture){ try{ cardEl.setPointerCapture(e.pointerId); }catch(err){} }
+      if(foEl.parentNode) foEl.parentNode.appendChild(foEl); // bring to front while dragging
     });
     cardEl.addEventListener('pointermove', e=>{
       if(!cardDrag || cardDrag.personId!==personId) return;
       const dx = (e.clientX - cardDrag.startX) / view.scale;
       const dy = (e.clientY - cardDrag.startY) / view.scale;
-      if(!cardDrag.moved && Math.hypot(dx,dy) > 5) cardDrag.moved = true;
+      if(!cardDrag.moved && Math.hypot(dx,dy) > 8) cardDrag.moved = true;
       if(!cardDrag.moved) return;
-      const p = byId(personId);
-      p.customX = cardDrag.baseX + dx;
-      p.customY = cardDrag.baseY + dy;
-      queueRender();
+      const newX = cardDrag.baseX + dx, newY = cardDrag.baseY + dy;
+      cardDrag.liveX = newX; cardDrag.liveY = newY;
+      cardDrag.foEl.setAttribute('x', newX-16);
+      cardDrag.foEl.setAttribute('y', newY-16);
     });
     function finishDrag(){
       if(!cardDrag || cardDrag.personId!==personId) return;
       const wasDrag = cardDrag.moved;
+      const finalX = cardDrag.liveX, finalY = cardDrag.liveY;
       cardDrag = null;
-      if(wasDrag){ save(); render(); }
-      else { selectPerson(personId); }
+      if(wasDrag){
+        const p = byId(personId);
+        p.customX = finalX; p.customY = finalY;
+        save(); render();
+      } else {
+        selectPerson(personId);
+      }
     }
     cardEl.addEventListener('pointerup', finishDrag);
     cardEl.addEventListener('pointercancel', finishDrag);
