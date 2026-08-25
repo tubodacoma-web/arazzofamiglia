@@ -143,6 +143,11 @@
   }
   .card{cursor:grab;}
   .card:active{cursor:grabbing;}
+  .card.dragging{
+    transition:none !important;
+    transform:none !important;
+    box-shadow:0 10px 24px rgba(0,0,0,0.6) !important;
+  }
   .card .name{
     font-family:'Cinzel',serif;font-weight:600;font-size:12.5px;letter-spacing:0.4px;
     color:var(--gold-light);line-height:1.25;margin:0;text-transform:uppercase;
@@ -424,7 +429,7 @@
   const STORAGE_KEY = "genealogia_data_v1";
   // bump this on every shipped change so you can tell, at a glance, whether the copy you're
   // looking at (phone, laptop, GitHub Pages...) is the same build or an older/newer one.
-  const APP_VERSION = "v2.7 · 14 ago 2026";
+  const APP_VERSION = "v2.8 · 14 ago 2026";
   let people = [];
   let selectedId = null;
   let lastPos = {}; // most recent card layout positions, reused for the print/PDF export
@@ -1084,7 +1089,13 @@
       if(!cardDrag || cardDrag.personId!==personId) return;
       const dx = (e.clientX - cardDrag.startX) / view.scale;
       const dy = (e.clientY - cardDrag.startY) / view.scale;
-      if(!cardDrag.moved && Math.hypot(dx,dy) > 8) cardDrag.moved = true;
+      if(!cardDrag.moved && Math.hypot(dx,dy) > 8){
+        cardDrag.moved = true;
+        // kill hover/transition effects the instant a real drag starts — otherwise the
+        // ".card:hover" lift animation fights the raw position updates every time the
+        // pointer crosses the card's edge, which is what made it feel jerky/uncatchable.
+        cardEl.classList.add('dragging');
+      }
       if(!cardDrag.moved) return;
       const newX = cardDrag.baseX + dx, newY = cardDrag.baseY + dy;
       cardDrag.liveX = newX; cardDrag.liveY = newY;
@@ -1096,6 +1107,7 @@
       const wasDrag = cardDrag.moved;
       const finalX = cardDrag.liveX, finalY = cardDrag.liveY;
       cardDrag = null;
+      cardEl.classList.remove('dragging');
       if(wasDrag){
         const p = byId(personId);
         p.customX = finalX; p.customY = finalY;
